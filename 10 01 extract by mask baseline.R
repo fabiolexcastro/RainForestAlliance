@@ -18,18 +18,25 @@ iso <- 'CIV'
 # =========================================================================
 # Load data ---------------------------------------------------------------
 # =========================================================================
+
+# West africa
 zone <- terra::vect('../data/gpkg/westafrica.gpkg')
 limt <- zone[zone$GID_0 == iso,]
+
+# East africa
+wrld <- ne_countries(returnclass = 'sf', scale = 50)
+zone <- wrld[wrld$sov_a3 %in% c('KEN', 'UGA'),]
+zone <- vect(zone)
 
 # Temperature -------------------------------------------------------------
 dirs.tmpr <- '//catalogue/WFP_ClimateRiskPr1/1.Data/ERA5' %>% 
   dir_ls() %>% 
-  grep('temperature', ., value = T) %>% 
+  grep('2m_temperature', ., value = T) %>% 
   as.character()
 
 year <- 1990:2021
  
-map(.x = dirs.tmpr, .f = function(i){
+map(.x = dirs.tmpr[2:length(dirs.tmpr)], .f = function(i){
   cat(green('To process: ', basename(i), '\n'))
   fles <- as.character(dir_ls(i, regexp = '.nc$')) 
   varb <- basename(i) %>% str_split(., '_') %>% map(., 4) %>% unlist() %>% str_sub(., 1, 3) %>% paste0('t', .)
@@ -46,7 +53,8 @@ map(.x = dirs.tmpr, .f = function(i){
       return(r)
     }) %>% 
       reduce(., c)
-    dout <- glue('../data/tif/climate_daily/baseline/waf/{varb}')
+    dout <- glue('../data/tif/climate_daily/baseline/eaf/{varb}')
+    dir_create(dout)
     terra::writeRaster(x = rst, filename = glue('{dout}/{varb}_{y}.tif'), overwrite = TRUE)
   }) 
   cat('Done!\n')
@@ -67,13 +75,13 @@ map(.x = 1:length(year), .f = function(i){
     m <- mnth(m)
     r <- grep(paste0(year[i], '.', m, '.'), fls, value = T)
     r <- rast(r)
-    r <- terra::crop(r, limt)
-    r <- terra::mask(r, limt)
+    r <- terra::crop(r, zone)
+    r <- terra::mask(r, zone)
     r <- ifel(r < 0, 0, r)
     return(r)
   }) %>% 
     reduce(., c)
-  terra::writeRaster(x = rst, filename = glue('../data/tif/climate_daily/baseline/civ-gha-nga-cmr/prec/prec_{year[i]}.tif'), overwrite = TRUE)
+  terra::writeRaster(x = rst, filename = glue('../data/tif/climate_daily/baseline/eaf/prec/prec_{year[i]}.tif'), overwrite = TRUE)
 })
 
 rm(dirs.prec, dirs.tmpr, dout, fles, fles.prec, fls, varb, yr, r, rs, rst, zone, limt, rstr)
@@ -83,7 +91,7 @@ rm(dirs.prec, dirs.tmpr, dout, fles, fles.prec, fls, varb, yr, r, rs, rst, zone,
 # =========================================================================
 
 # Temperature 
-dirs.tasm <- as.character(dir_ls('../data/tif/climate_daily/baseline/waf', type = 'directory'))
+dirs.tasm <- as.character(dir_ls('../data/tif/climate_daily/baseline/eaf', type = 'directory'))
 dirs.tasm <- grep('tm', dirs.tasm, value = T)
 
 rstr.tasm <- map(.x = 1:length(dirs.tasm), .f = function(i){
@@ -108,7 +116,7 @@ rstr.tasm <- map(.x = 1:length(dirs.tasm), .f = function(i){
     }) %>% 
       reduce(., c)
     
-    dout <- glue('../data/tif/climate_monthly/baseline/waf/{varb}')
+    dout <- glue('../data/tif/climate_monthly/baseline/eaf/{varb}')
     dir_create(dout)
     terra::writeRaster(x = trr, filename =  glue('{dout}/{varb}_{yea}.tif'), overwrite = TRUE)
     return(trr)
@@ -121,7 +129,7 @@ rstr.tasm <- map(.x = 1:length(dirs.tasm), .f = function(i){
 })
 
 # Precipitation
-fles.prec <- dir_ls('../data/tif/climate_daily/baseline/prec') %>% 
+fles.prec <- dir_ls('../data/tif/climate_daily/baseline/eaf/prec') %>% 
   as.character() %>% 
   grep('.tif$', ., value = T)
 
@@ -141,7 +149,7 @@ map(.x = 1:length(year), .f = function(i){
   }) %>% 
     reduce(., c)
   
-  terra::writeRaster(x = trr, filename = glue('../data/tif/climate_monthly/baseline/prec/prec_{year[i]}.tif'), overwrite = T)
+  terra::writeRaster(x = trr, filename = glue('../data/tif/climate_monthly/baseline/eaf/prec/prec_{year[i]}.tif'), overwrite = T)
   cat('Done!\n')
     
 })
@@ -154,14 +162,13 @@ map(.x = 1:length(year), .f = function(i){
 # Precipitation -----------------------------------------------------------
 library(chirps)
 chrps <- chirps::get_chirps(object = zone, server = 'CHC', dates = c('2022-01-01', '2022-12-31'))
-
 chrps <- terra::crop(chrps, zone)
 chrps <- terra::mask(chrps, zone)
 chrps <- terra::ifel(chrps < 0, 0, chrps)
 plot(chrps[[1]])
 
 # To write daily data 
-terra::writeRaster(x = chrps, filename = '../data/tif/climate_daily/baseline/waf/prec/prec_2022.tif')
+terra::writeRaster(x = chrps, filename = '../data/tif/climate_daily/baseline/eaf/prec/prec_2022.tif')
 
 # To monthly data
 chrps.mnth <- map(.x = 1:12, .f = function(i){
@@ -179,7 +186,9 @@ terra::writeRaster(x = chrps.mnth, filename = '../data/tif/climate_monthly/basel
 
 # Daily
 dirs <- dir_ls('raw_era5') %>% as.character()
-map(.x = dirs, .f = function(i){
+dirs <- grep('temperature', dirs, value = T)
+
+map(.x = dirs[2:length(dirs)], .f = function(i){
   
   fls <- dir_ls(i) %>% as.character()
   var <- basename(fls) %>% str_split('-') %>% map(4) %>% unlist() %>% unique() %>% tolower %>% paste0('t', .)
@@ -197,17 +206,19 @@ map(.x = dirs, .f = function(i){
   }) %>% 
     reduce(., c)
   
-  terra::writeRaster(x = rst, filename = glue('../data/tif/climate_daily/baseline/waf/{var}/{var}_2022.tif'), overwrite = TRUE)
+  terra::writeRaster(x = rst, filename = glue('../data/tif/climate_daily/baseline/eaf/{var}/{var}_2022.tif'), overwrite = TRUE)
   
 })
 
 # Monthly
-dirs <- dir_ls('../data/tif/climate_daily/baseline/waf', type = 'directory', regexp = 'tm')
+dirs <- dir_ls('../data/tif/climate_daily/baseline/eaf', type = 'directory', regexp = 'tm')
 dirs <- as.character(dirs)
 
 map(.x = 1:length(dirs), .f = function(i){
+  
   fls <- dir_ls(dirs[i], regexp ='.tif$') %>% as.character() %>% grep('2022', ., value = T)
   rst <- rast(fls)
+  var <- basename(fls) %>% str_split(., '_') %>% map(1) %>% unlist %>% unique()
   
   trr <- map(.x = 1:12, .f = function(m){
     
@@ -220,10 +231,8 @@ map(.x = 1:length(dirs), .f = function(i){
   }) %>% 
     reduce(., c)
   
-  
-  names(trr) <- glue('tmax_')
-  
+  names(trr) <- glue('{var}_{1:12}')
+  terra::writeRaster(x = trr, filename = glue('../data/tif/climate_monthly/baseline/eaf/{var}/{var}_2022.tif'), overwrite = TRUE)
   
 })
 
-rast('../data/tif/climate_daily/baseline/waf/tmax/tmax_2022.tif')

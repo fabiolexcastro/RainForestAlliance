@@ -14,7 +14,7 @@ mnth <- function(x){ifelse(x < 10, paste0('0', x), as.character(x))}
 calc.tai <- function(yr){
   
   # yr <- 1990
-  cat('To process: ', yr, ' ', mn, '\n')
+  cat('To process: ', yr, ' ', '\n')
   tmx <- rast(as.character(grep(yr, fles.tmax, value = T)))
   tmn <- rast(as.character(grep(yr, fles.tmin, value = T)))
   ppt <- rast(as.character(grep(yr, fles.prec, value = T)))
@@ -37,6 +37,8 @@ calc.tai <- function(yr){
   
   # Resample solar radiation 
   srd <- terra::resample(srad, rng, method = 'bilinear')
+  names(srd) <- paste0('SRAD_', c(paste0('0', 1:9), 10:12))
+  names(rng) <- paste0('RANGE_', c(paste0('0', 1:9), 10:12))
   
   # Assign precipitation names in envirem environment
   envirem::assignNames(solrad = 'SRAD_##', tmean = 'TMEAN_##', precip = 'PREC_##')
@@ -58,12 +60,12 @@ calc.tai <- function(yr){
 
 # Vector data
 wrld <- ne_countries(returnclass = 'sf', scale = 50)
-zone <- terra::vect('../data/gpkg/westafrica.gpkg')
-fles.prec <- dir_ls('../data/tif/climate_monthly/baseline/waf/prec')
+zone <- terra::vect('../data/gpkg/eastafrica.gpkg')
 
 # Climate data
-fles.tmax <- dir_ls('../data/tif/climate_monthly/baseline/waf/tmax')
-fles.tmin <- dir_ls('../data/tif/climate_monthly/baseline/waf/tmin')
+fles.tmax <- dir_ls('../data/tif/climate_monthly/baseline/eaf/tmax')
+fles.tmin <- dir_ls('../data/tif/climate_monthly/baseline/eaf/tmin')
+fles.prec <- dir_ls('../data/tif/climate_monthly/baseline/eaf/prec')
 
 # Solar radiation
 srad <- dir_ls('//catalogue/workspace-cluster9/DATA/ET_SolRad', regexp = 'et_solrad_')
@@ -75,7 +77,7 @@ srad <- terra::mask(srad, zone)
 names(srad) <- glue('srad_{c(paste0("0", 1:9), 10:12)}')
 
 # To create TAI index -----------------------------------------------------
-tais <- map(1990:2022, calc.tai)
+tais <- map(1990:2021, calc.tai)
 tais <- map(tais, rast)
 tais <- reduce(tais, c)
 
@@ -83,42 +85,58 @@ tais <- reduce(tais, c)
 tais.avrg <- app(tais, mean, na.rm = T)
 
 # To write ----------------------------------------------------------------
-dir.create('../data/tif/indices/waf/tai')
-terra::writeRaster(x = tais, filename = '../data/tif/indices/waf/tai/tai_bsl_tsr.tif')
-terra::writeRaster(x = tais.avrg, filename = '../data/tif/indices/waf/tai/tai_bsl_avg.tif')
+dir.create('../data/tif/indices/eaf/tai')
+terra::writeRaster(x = tais, filename = '../data/tif/indices/eaf/tai/tai_bsl_tsr.tif')
+terra::writeRaster(x = tais.avrg, filename = '../data/tif/indices/eaf/tai/tai_bsl_avg.tif')
+
+# Read the future data ----------------------------------------------------
+tais.bsln <- terra::rast('../data/tif/indices/eaf/tai/tai_bsl_avg.tif')
+# tais.bsln <- tais.avrg
+tais.ftre <- terra::rast('../data/tif/indices/eaf/tai/tai_ftr_avg.tif')
+
+stck <- c(tais.bsln, tais.ftre)
+names(stck) <- c('Baseline', 'Future')
 
 # To reclassify -----------------------------------------------------------
-pnts <- suppressMessages(read_csv('../data/tbl/presences/cocoa_westafrica_dupv.csv'))
-vles <- terra::extract(tais.avrg, pnts[,1:2])[,2]
-qntl <- quantile(vles, c(0, 0.5, 0.75, 1), na.rm = T)
-mtrx <- matrix(c(0, qntl[2], 1, qntl[2], qntl[3], 2, qntl[3], 367, 3), byrow = T, ncol = 3)
-clsf <- terra::classify(tais.avrg, mtrx, include.lowest = T)
-clsf <- terra::crop(clsf, zone) %>% terra::mask(., zone)
-pnts <- mutate(pnts, value = vles)
-write.csv(mtrx, '../data/tbl/reclassify/tai_values.csv', row.names = F)
+# pnts <- suppressMessages(read_csv('../data/tbl/presences/cocoa_westafrica_dupv.csv'))
 
+# Tea ---------------------------------------------------------------------
+pnts <- suppressMessages(read_csv('../data/tbl/presences/tea_east_africa.csv')) %>% filter(iso %in% c('KEN', 'UGA'))
+vles <- terra::extract(tais.bsln, pnts[,1:2])[,2]
+qntl <- quantile(vles, c(0, 0.5, 0.75, 1), na.rm = T)
+mtrx <- matrix(c(0, qntl[2], 1, qntl[2], qntl[3], 2, qntl[3], 100, 3), byrow = T, ncol = 3)
+
+# To classify
+clsf <- terra::classify(stck, mtrx, include.lowest = T)
+clsf <- terra::crop(clsf, zone) %>% terra::mask(., zone)
+write.csv(mtrx, '../data/tbl/reclassify/tai-eaf_values.csv', row.names = F)
+terra::writeRaster(x = clsf, filename = '../data/tif/indices/eaf/tai/tai_bsl-ftr_cls.tif')
+
+ 
 # =========================================================================
 # To make the map ---------------------------------------------------------
 # =========================================================================
 tble <- terra::as.data.frame(clsf, xy = T) %>% 
   as_tibble() %>% 
-  setNames(c('x', 'y', 'value')) %>% 
-  mutate(value = factor(value))
+  gather(var, value, -x, -y) %>% 
+  mutate(value = factor(value), var = factor(var, levels = c('Baseline', 'Future')))
 
 gmap <- ggplot() + 
   geom_tile(data = tble, aes(x = x, y = y, fill = value)) + 
+  facet_wrap(.~var) +
   scale_fill_manual(values = brewer.pal(n = 3, name = 'YlOrRd'), labels = c('Low', 'Medium', 'High')) +
   geom_sf(data = wrld, fill = NA, col = 'grey40') + 
   geom_sf(data = st_as_sf(zone), fill = NA, col = 'grey20') +
   labs(x = 'Lon', y = 'Lat', fill = 'Class') +
   coord_sf(xlim = ext(zone)[1:2], ylim = ext(zone)[3:4]) +
   ggtitle(label = 'Thornwaite Aridity Index - Westafrica', 
-          subtitle = 'Baseline') +
+          subtitle = '') +
   theme_minimal() + 
   theme(legend.position = 'bottom', 
         plot.title = element_text(hjust = 0.5, face = 'bold'),
         plot.subtitle = element_text(hjust = 0.5, face = 'bold'),
         axis.text.x = element_text(size = 6),
+        strip.text = element_text(face = 'bold', hjust = 0.5),
         axis.title = element_text(face = 'bold', size = 8),
         axis.text.y = element_text(angle = 90, hjust = 0.5, size = 6)) +
   guides(fill = guide_legend( 
@@ -134,7 +152,7 @@ gmap <- ggplot() +
     label.position = "bottom"
   )) 
 
-ggsave(plot = gmap, filename = '../png/maps/indices/tai_bsl_rcl_waf.png', units = 'in', width = 9, height = 7, dpi = 300)
+ggsave(plot = gmap, filename = '../png/maps/indices/tai_bsl-ftr_rcl_eaf-coffee.png', units = 'in', width = 12, height = 5, dpi = 300)
 
 # ========================================================================
 # Stat ecdf  -------------------------------------------------------------

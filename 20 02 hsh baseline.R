@@ -76,7 +76,7 @@ calc.hsh.bsl <- function(yr){
 # =========================================================================
 # Load data ---------------------------------------------------------------
 # =========================================================================
-path <- '../data/tif/climate_daily/baseline/waf'
+path <- '../data/tif/climate_daily/baseline/eaf'
 dirs <- dir_ls(path, type = 'directory') %>% grep('tm', ., value = T) %>% as.character()
 
 # Humidity
@@ -84,15 +84,15 @@ path.hmdt <- '//catalogue/WFP_ClimateRiskPr1/1.Data/ERA5/2m_relative_humidity'
 fles.hmdt <- dir_ls(path.hmdt, regexp = '.nc$') %>% as.character() # fles.hmdt <- dir_ls('./raw_era5/2m_relative_humidity', regexp = '.nc$') %>% as.character()
 
 # Tmax 
-path.tmax <- '../data/tif/climate_monthly/baseline/waf/tmax'
+path.tmax <- '../data/tif/climate_monthly/baseline/eaf/tmax'
 fles.tmax <- dir_ls(path.tmax, regexp = '.tif$') %>% as.character()
 
 # Tmin
-path.tmin <- '../data/tif/climate_monthly/baseline/waf/tmin'
+path.tmin <- '../data/tif/climate_monthly/baseline/eaf/tmin'
 fles.tmin <- dir_ls(path.tmin, regexp = '.tif$') %>% as.character()
 
 # Spatial data
-zone <- terra::vect('../data/gpkg/westafrica.gpkg')
+zone <- terra::vect('../data/gpkg/eastafrica.gpkg')
 wrld <- ne_countries(returnclass = 'sf', scale = 50)
 
 # =========================================================================
@@ -114,7 +114,7 @@ map(.x = 1990:2021, .f = function(i){
   }) %>% 
     reduce(., c)
   
-  dir <- glue('../data/tif/climate_monthly/baseline/waf/hmdt')
+  dir <- glue('../data/tif/climate_monthly/baseline/eaf/hmdt')
   mns <- c(glue('0{1:9}'), 10:12)
   names(rst) <- glue('hmdt_{i}-{mns}')
   terra::writeRaster(x = rst, filename = glue('{dir}/hmdt_{i}.tif'), overwrite = T)
@@ -127,40 +127,55 @@ map(.x = 1990:2021, .f = function(i){
 # -------------------------------------------------------------------------
 
 # Humidity 
-path.hmdt <- '../data/tif/climate_monthly/baseline/waf/hmdt'
+path.hmdt <- '../data/tif/climate_monthly/baseline/eaf/hmdt'
 fles.hmdt <- dir_ls(path.hmdt, regexp = '.tif$') %>% as.character()
 
 # To apply the function  --------------------------------------------------
 
 # Time series
-hsh.tsr <- map(.x = 1990:2022, .f = calc.hsh.bsl)
+hsh.tsr <- map(.x = 1990:2021, .f = calc.hsh.bsl)
 hsh.tsr <- reduce(hsh.tsr, c)
-terra::writeRaster(x = hsh.tsr, filename = '../data/tif/indices/waf/hsh/hsh_bsl_tsr.tif', overwrite = TRUE)
+terra::writeRaster(x = hsh.tsr, filename = '../data/tif/indices/eaf/hsh/hsh_bsl_tsr.tif', overwrite = TRUE)
 
-# Monthly
-hsh.mnt <- map(.x = 1:12, .f = function(m){
-  cat('To process: ', month.abb[m], '\n')
-  r <- hsh.tsr[[grep(glue('_{m}$'), names(hsh.tsr), value = F)]]
+# To calculate the average 
+yrs <- 1990:2021
+
+hsh.avg <- map(.x = 1:length(yrs), .f = function(i){
+  cat('To process: ', yrs[i],  '\n')
+  r <- hsh.tsr[[grep(yrs[i], names(hsh.tsr), value = F)]]
   a <- app(r, mean, na.rm = T)
-  names(a) <- glue('hsh_{m}')
+  names(a) <- glue('hsh_{yrs[i]}')
   return(a)
 }) %>% 
   reduce(., c)
-
-terra::writeRaster(x = hsh.mnt, filename = '../data/tif/indices/waf/hsh/hsh_bsl_mnt.tif')
+terra::writeRaster(x = hsh.avg, filename = '../data/tif/indices/eaf/hsh/hsh_bsl_tsr-avg.tif', overwrite = T)
 
 # Total average 
-hsh.avg <- app(hsh.mnt, mean, na.rm = T)
-terra::writeRaster(x = hsh.avg, filename = '../data/tif/indices/waf/hsh/hsh_bsl_avg.tif', overwrite = TRUE)
+hsh.avg <- app(hsh.avg, mean, na.rm = T)
+terra::writeRaster(x = hsh.avg, filename = '../data/tif/indices/eaf/hsh/hsh_bsl_avg.tif', overwrite = TRUE)
+
+# Read future data --------------------------------------------------------
+hsh.bsl <- rast('../data/tif/indices/eaf/hsh/hsh_bsl_avg.tif')
+hsh.ftr <- rast('../data/tif/indices/eaf/hsh/hsh_ftr_avg.tif')
+
+hsh.bsl <- terra::resample(hsh.bsl, hsh.ftr, method = 'bilinear')
+names(hsh.bsl) <- 'hsh_bsl'
+stk <- c(hsh.bsl, hsh.ftr)
 
 # To reclassify -----------------------------------------------------------
-pnts <- suppressMessages(read_csv('../data/tbl/presences/cocoa_westafrica_dupv.csv'))
-vles <- terra::extract(hsh.avg, pnts[,1:2])[,2]
-qntl <- quantile(vles, c(0, 0.5, 0.75, 1))
-mtrx <- matrix(c(0, qntl[2], 1, qntl[2], qntl[3], 2, qntl[3], 367, 3), byrow = T, ncol = 3)
-clsf <- terra::classify(hsh.avg, mtrx, include.lowest = T)
+mtrx <- matrix(c(-Inf, 25, 1, 25, 30, 2, 30, 35, 3, 35, Inf, 4), byrow = T, ncol = 3)
+
+# To classify
+clsf <- terra::classify(stk, mtrx, include.lowest = T)
 clsf <- terra::crop(clsf, zone) %>% terra::mask(., zone)
-pnts <- mutate(pnts, value = vles)
+names(clsf) <- c('Baseline', 'Future')
+
+terra::writeRaster(clsf, filename = '../data/tif/indices/eaf/hsh/hsh_bsl-ftr_cls.tif')
+
+# Mild or no stress: < 25
+# Caution: 25–30
+# Danger: 30-35
+# Extreme danger: > 35
 
 write.csv(mtrx, '../data/tbl/reclassify/hsh_values.csv', row.names = F)
 
@@ -169,18 +184,19 @@ write.csv(mtrx, '../data/tbl/reclassify/hsh_values.csv', row.names = F)
 # =========================================================================
 tble <- terra::as.data.frame(clsf, xy = T) %>% 
   as_tibble() %>% 
-  setNames(c('x', 'y', 'value')) %>% 
-  mutate(value = factor(value))
+  gather(var, value, -x, -y) %>% 
+  mutate(var = factor(var, levels = c('Baseline', 'Future')))
 
 gmap <- ggplot() + 
-  geom_tile(data = tble, aes(x = x, y = y, fill = value)) + 
-  scale_fill_manual(values = brewer.pal(n = 3, name = 'YlOrRd'), labels = c('Low', 'Medium', 'High')) +
+  geom_tile(data = tble, aes(x = x, y = y, fill = factor(value))) + 
+  scale_fill_manual(values = brewer.pal(n = 4, name = 'YlOrRd'), labels = c('Mild or no stress', 'Caution', 'Danger', 'Extreme danger')) +
+  facet_wrap(~var) +
   geom_sf(data = wrld, fill = NA, col = 'grey40') + 
   geom_sf(data = st_as_sf(zone), fill = NA, col = 'grey20') +
   labs(x = 'Lon', y = 'Lat', fill = 'Class') +
   coord_sf(xlim = ext(zone)[1:2], ylim = ext(zone)[3:4]) +
   ggtitle(label = 'Human Heat Stress - Westafrica', 
-          subtitle = 'Baseline') +
+          subtitle = '') +
   theme_minimal() + 
   theme(legend.position = 'bottom', 
         plot.title = element_text(hjust = 0.5, face = 'bold'),
@@ -201,8 +217,7 @@ gmap <- ggplot() +
     label.position = "bottom"
   )) 
 
-
-ggsave(plot = gmap, filename = '../png/maps/indices/hsh_bsl_rcl_waf.png', units = 'in', width = 9, height = 7, dpi = 300)
+ggsave(plot = gmap, filename = '../png/maps/indices/hsh_bsl-ftr_rcl_waf.png', units = 'in', width = 12, height = 5, dpi = 300)
 
 # ========================================================================
 # Stat ecdf  -------------------------------------------------------------

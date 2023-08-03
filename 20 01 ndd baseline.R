@@ -32,7 +32,8 @@ calc.ndd <- function(yr){
     reduce(., c)
   
   mnt <- c(glue('0{1:9}'), 10:12)
-  names(trr) <- glue('ndd_{yr}-{mnt}')
+  trr <- sum(trr)
+  names(trr) <- glue('ndd_{yr}')
   return(trr)
   
 }
@@ -40,87 +41,96 @@ calc.ndd <- function(yr){
 # =========================================================================
 # Load data ---------------------------------------------------------------
 # =========================================================================
-path <- '../data/tif/climate_daily/baseline/waf/prec'
+path <- '../data/tif/climate_daily/baseline/eaf/prec'
 fles <- dir_ls(path) %>% as.character()
 
 # Spatial data
+wrld <- rnaturalearth::ne_countries(returnclas = 'sf', scale = 50)
 zone <- terra::vect('../data/gpkg/westafrica.gpkg')
-wrld <- ne_countries(returnclass = 'sf', scale = 50)
+zone <- terra::vect('../data/gpkg/eastafrica.gpkg')
+zone <- wrld[wrld$sov_a3 %in% c('KEN', 'UGA'),]
 
 # To apply the function ---------------------------------------------------
-ndd.tsr <- map(.x = 1990:2022, .f = calc.ndd)
+plan(cluster, workers = 12, gc = TRUE)
+# ndd.tsr <- map(.x = 1990:2022, .f = calc.ndd)
+ndd.tsr <- future_map(.x = 1990:2022, .f = calc.ndd)
+future:::ClusterRegistry('stop')
 ndd.tsr <- reduce(ndd.tsr, c)
-dou <- glue('../data/tif/indices/waf/ndd')
+dou <- glue('../data/tif/indices/eaf/ndd')
 dir_create(dou)
 terra::writeRaster(x = ndd.tsr, filename = glue('{dou}/ndd_bsl_tsr.tif'), overwrite = TRUE)
 
 # =========================================================================
-# To calculate the multiaverage monthly -----------------------------------
-# =========================================================================
-ndd.mnt <- map(.x = 1:12, .f = function(m){
-  
-  cat('To process: ', month.abb[m], '\n')
-  m <- mnth(m)
-  r <- ndd.tsr[[grep(paste0('-', m, '$'), names(ndd.tsr), value = F)]]
-  r <- app(r, mean, na.rm = T)
-  names(r) <- glue('ndd_{m}')
-  return(r)
-  
-}) %>% 
-  reduce(., c)
-
-ndd.mnt
-terra::writeRaster(x = ndd.mnt, filename = glue('{dou}/ndd_bsl_mnt.tif'), overwrite = TRUE)
-
-# =========================================================================
 # To calculate the total average ------------------------------------------
 # =========================================================================
-ndd.mnt <- terra::rast(glue('{dou}/ndd_bsl_mnt.tif'))
-ndd.avg <- terra::app(ndd.mnt, sum, na.rm = T)
 
-terra::writeRaster(x = ndd.avg, filename = glue('{dou}/ndd_bsl_avg.tif'), overwrite = TRUE)
+ndd.avg <- terra::app(ndd.tsr, mean, na.rm = T)
+ndd.avg <- terra::crop(ndd.avg, zone) %>% terra::mask(., zone)
+terra::writeRaster(x = ndd.avg, filename = glue('../data/tif/indices/eaf/ndd/ndd_bsl_avg.tif'), overwrite = TRUE)
 
-ndd.mnt <- terra::rast(glue('{dou}/ndd_bsl_mnt.tif'))
-ndd.avg <- terra::rast(glue('{dou}/ndd_bsl_avg.tif'))
+ndd.bsl <- terra::rast(glue('../data/tif/indices/eaf/ndd/ndd_bsl_avg.tif'))
+ndd.ftr <- terra::rast(glue('../data/tif/indices/eaf/ndd/ndd_ftr_avg.tif'))
 
 # =========================================================================
 # Presences ---------------------------------------------------------------
 # =========================================================================
+
+# Cocoa
 pnts <- suppressMessages(read_csv('../data/tbl/presences/cocoa_westafrica.csv'))[,2:3]
-dupv <- duplicated(terra::extract(ndd.avg, pnts[,1:2], cell = T)[,3])
-pnts <- pnts[!dupv,]
-write.csv(pnts, '../data/tbl/presences/cocoa_westafrica_dupv.csv', row.names = F)
+pnts <- suppressMessages(read_csv('../data/tbl/presences/tea_east_africa.csv'))
+pnts <- filter(pnts, iso %in% c('UGA', 'KEN'))
+pnts <- dplyr::select(pnts, x, y)
+# dupv <- duplicated(terra::extract(ndd.bsl, pnts[,1:2], cell = T)[,3])
+# pnts <- pnts[!dupv,]
+
+# Coffee
+pnts <- read_csv('//alliancedfs.alliance.cgiar.org/CL9_Coffee_Cocoa2/_coffeeEastAfrica/tbl/occ/occ_swd')
+pnts <- mutate(pnts, iso = terra::extract(vect(zone), pnts[,c('Lon', 'Lat')])$sov_a3, .before = Lon)
+pnts <- filter(pnts, iso %in% c('UGA', 'KEN'))
+pnts <- dplyr::select(pnts, Lon, Lat)
 
 # Extract the value for the presences -------------------------------------
-vles <- terra::extract(ndd.avg, pnts[,1:2])[,2]
+vles <- terra::extract(ndd.bsl, pnts[,1:2])[,2]
 qntl <- quantile(vles, c(0, 0.5, 0.75, 1))
 mtrx <- matrix(c(0, qntl[2], 1, qntl[2], qntl[3], 2, qntl[3], 367, 3), byrow = T, ncol = 3)
-clsf <- terra::classify(ndd.avg, mtrx, include.lowest = T)
-clsf <- terra::crop(clsf, zone) %>% terra::mask(., zone)
-pnts <- mutate(pnts, value = vles)
 
-dir.create('../data/tbl/reclassify')
-write.csv(mtrx, '../data/tbl/reclassify/ndd_values.csv', row.names = F)
+dir.create('../data/tbl/reclassify/eaf/coffee')
+write.csv(mtrx, '../data/tbl/reclassify/eaf/coffee/coffee_ndd_values.csv', row.names = F)
+
+# To reclassify -----------------------------------------------------------
+names(ndd.bsl) <- 'ndd_bsl'
+names(ndd.ftr) <- 'ndd_ftr'
+ndd.ftr <- terra::resample(ndd.ftr, ndd.bsl)
+
+stk <- c(ndd.bsl, ndd.ftr)
+
+rcl <- terra::classify(stk, mtrx, include.lowest = T)
+dir.create('../data/tif/indices/eaf/coffee/ndd')
+terra::writeRaster(rcl, filename = glue('../data/tif/indices/eaf/coffee/ndd/ndd_bsl-ftr_cls.tif'))
 
 # =========================================================================
 # To make the map ---------------------------------------------------------
 # =========================================================================
-tble <- terra::as.data.frame(clsf, xy = T) %>% 
+tble <- terra::as.data.frame(rcl, xy = T) %>% 
   as_tibble() %>% 
-  setNames(c('x', 'y', 'value')) %>% 
-  mutate(value = factor(value))
+  setNames(c('x', 'y', 'Baseline', 'Future')) %>% 
+  gather(var, value, -x, -y) %>%
+  mutate(var = factor(var, levels = c('Baseline', 'Future')),
+         value = factor(value))
 
 gmap <- ggplot() + 
   geom_tile(data = tble, aes(x = x, y = y, fill = value)) + 
-  scale_fill_manual(values = brewer.pal(n = 3, name = 'BrBG'), labels = c('Low', 'Medium', 'High')) +
+  scale_fill_manual(values = rev(brewer.pal(n = 3, name = 'BrBG')), labels = c('Low', 'Medium', 'High')) +
+  facet_wrap(.~ var) +
   geom_sf(data = wrld, fill = NA, col = 'grey40') + 
   geom_sf(data = st_as_sf(zone), fill = NA, col = 'grey20') +
   labs(x = 'Lon', y = 'Lat', fill = 'NDD Class') +
   coord_sf(xlim = ext(zone)[1:2], ylim = ext(zone)[3:4]) +
-  ggtitle(label = 'Number of dry days - Westafrica', 
-          subtitle = 'Baseline') +
+  ggtitle(label = 'Number of dry days - Eastafrica', 
+          subtitle = '') +
   theme_minimal() + 
   theme(legend.position = 'bottom', 
+        strip.text = element_text(face = 'bold', hjust = 0.5),
         plot.title = element_text(hjust = 0.5, face = 'bold'),
         plot.subtitle = element_text(hjust = 0.5, face = 'bold'),
         axis.text.x = element_text(size = 6),
@@ -141,7 +151,7 @@ gmap <- ggplot() +
 
 gmap
 
-ggsave(plot = gmap, filename = '../png/maps/indices/ndd_bsl_rcl_waf.png', units = 'in', width = 9, height = 7, dpi = 300)
+ggsave(plot = gmap, filename = '../png/maps/indices/ndd_bsl-ftr_rcl_eaf-coffee.png', units = 'in', width = 12, height = 5, dpi = 300)
 
 # ========================================================================
 # Stat ecdf  -------------------------------------------------------------
